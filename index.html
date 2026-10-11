@@ -634,7 +634,7 @@ async function connectGitHub(repo, wallet, msg) {
   a.state = 'running';
   a.label = 'ResearchBot-1';
   if (wallet) a.wallet = wallet;
-  renderAgentTabs();
+  renderTabs();
   renderStats();
 
   setTimeout(closeConnect, 1500);
