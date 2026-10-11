@@ -191,21 +191,26 @@ svg.spark{display:block;width:100%;height:44px;}
     </div>
     <div class="modal-body">
       <p style="font-size:12px;color:var(--fg2);margin-bottom:16px;line-height:1.6">
-        Enter your Conway API key and agent wallet address from <code style="background:var(--card);padding:1px 5px;border-radius:3px;font-size:11px">~/.automaton/automaton.json</code> to stream live data.
+        Connecte ton agent en mode <strong>GitHub</strong> (digests du repo) ou en mode <strong>Conway API</strong> (agent live). L'API key est optionnelle.
       </p>
       <div class="field">
-        <label>Conway API URL</label>
-        <input id="inp-url" type="url" placeholder="https://api.conway.ai" value="https://api.conway.ai">
+        <label>GitHub Repo <span style="color:var(--ok);font-size:10px">MODE ACTIF</span></label>
+        <input id="inp-repo" type="text" placeholder="owner/repo" value="Iyessiha/automaton-dashboard">
+        <div class="hint">Lit les digests depuis <code>digests/</code> sur GitHub</div>
       </div>
       <div class="field">
-        <label>API Key</label>
-        <input id="inp-key" type="password" placeholder="conway_sk_…">
-        <div class="hint">Found in automaton.json → <code>conwayApiKey</code></div>
+        <label>Conway API URL <span style="color:var(--fg3);font-size:10px">(optionnel)</span></label>
+        <input id="inp-url" type="url" placeholder="https://api.conway.ai" value="">
+      </div>
+      <div class="field">
+        <label>Conway API Key <span style="color:var(--fg3);font-size:10px">(optionnel)</span></label>
+        <input id="inp-key" type="password" placeholder="conway_sk_… — laisser vide pour mode GitHub">
+        <div class="hint">Laisser vide = lecture des digests GitHub uniquement</div>
       </div>
       <div class="field">
         <label>Agent Wallet Address</label>
         <input id="inp-wallet" type="text" placeholder="0xabc…">
-        <div class="hint">Found in automaton.json → <code>walletAddress</code> — leave blank for first agent</div>
+        <div class="hint">Found in automaton.json → <code>agentWalletAddress</code></div>
       </div>
       <div id="conn-msg" style="font-size:12px;color:var(--fg3);min-height:18px;margin-top:4px;font-family:var(--mono)"></div>
     </div>
@@ -517,7 +522,8 @@ function showToast(msg){
 // =========================================================
 // REAL API CONNECTION
 // =========================================================
-let apiCfg = null; // {url, key, wallet} when connected
+let apiCfg = null; // {url, key, wallet} when connected to Conway API
+let ghCfg  = null; // {repo, wallet} when connected via GitHub mode
 let liveInterval = null;
 
 function setPill(mode) {
@@ -537,10 +543,11 @@ function defaultApiUrl() {
 function openConnect() {
   try {
     const s = JSON.parse(localStorage.getItem('atm_conn') || '{}');
-    document.getElementById('inp-url').value = s.url || defaultApiUrl();
-    if (s.wallet) document.getElementById('inp-wallet').value = s.wallet;
+    if (s.repo) document.getElementById('inp-repo').value = s.repo;
+    if (s.url)  document.getElementById('inp-url').value  = s.url;
+    if (s.wallet) document.getElementById('inp-wallet').value = s.wallet || '0xDCEF59AF1e1c263cAf704E9811f477d4CD816044';
   } catch(e){
-    document.getElementById('inp-url').value = defaultApiUrl();
+    document.getElementById('inp-url').value = '';
   }
   document.getElementById('overlay').hidden = false;
 }
@@ -548,21 +555,32 @@ function closeConnect() { document.getElementById('overlay').hidden = true; }
 document.getElementById('overlay').addEventListener('click', e => { if(e.target===e.currentTarget) closeConnect(); });
 
 async function doConnect() {
-  const url  = document.getElementById('inp-url').value.trim().replace(/\/$/,'');
-  const key  = document.getElementById('inp-key').value.trim();
+  const url    = document.getElementById('inp-url').value.trim().replace(/\/$/,'');
+  const key    = document.getElementById('inp-key').value.trim();
   const wallet = document.getElementById('inp-wallet').value.trim();
-  const msg  = document.getElementById('conn-msg');
+  const repo   = document.getElementById('inp-repo').value.trim();
+  const msg    = document.getElementById('conn-msg');
 
-  if (!key) { msg.textContent = '⚠ API key required'; msg.style.color='var(--warn)'; return; }
-  msg.textContent = 'Testing connection…'; msg.style.color='var(--fg3)';
+  msg.textContent = 'Connexion en cours…'; msg.style.color='var(--fg3)';
   setPill('loading');
 
+  // ── Mode GitHub (pas de clé Conway) ───────────────────────────────────
+  if (!key) {
+    try {
+      await connectGitHub(repo, wallet, msg);
+    } catch(err) {
+      setPill('err');
+      msg.textContent = `✗ GitHub: ${err.message}`;
+      msg.style.color = 'var(--bad)';
+    }
+    return;
+  }
+
+  // ── Mode Conway API (clé présente) ────────────────────────────────────
   try {
-    // Test: fetch credit balance
     const res = await fetch(`${url}/v1/credits`, {
       headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }
     });
-
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
     const data = await res.json();
 
@@ -570,24 +588,86 @@ async function doConnect() {
     try { localStorage.setItem('atm_conn', JSON.stringify({url, wallet})); } catch(e){}
 
     setPill('live');
-    msg.textContent = `✓ Connected — balance $${(data.balance||data.credits||0).toFixed(2)}`;
+    msg.textContent = `✓ Connecté — solde $${(data.balance||data.credits||0).toFixed(2)}`;
     msg.style.color = 'var(--ok)';
-
-    // Replace first agent with live data
     await refreshLiveAgent(data);
     startLivePolling();
     setTimeout(closeConnect, 1200);
-
   } catch(err) {
     setPill('err');
-    // CORS is the most likely failure from a browser
     const isCors = err.message.includes('Failed to fetch') || err.message.includes('NetworkError');
-    msg.textContent = isCors
-      ? '✗ CORS blocked — use the Creator CLI or a local proxy instead'
-      : `✗ ${err.message}`;
+    msg.textContent = isCors ? '✗ CORS — utilise le proxy Vercel' : `✗ ${err.message}`;
     msg.style.color = 'var(--bad)';
     console.error('[Conway API]', err);
   }
+}
+
+async function connectGitHub(repo, wallet, msg) {
+  // List digest files from GitHub API (public repo, no auth needed)
+  const apiBase = `https://api.github.com/repos/${repo}`;
+  const r = await fetch(`${apiBase}/contents/digests`);
+  if (!r.ok) throw new Error(`Repo introuvable ou pas de digests encore (${r.status})`);
+  const files = await r.json();
+
+  // Sort by name descending → most recent first
+  const sorted = files.filter(f => f.name.endsWith('.md')).sort((a,b) => b.name.localeCompare(a.name));
+  if (!sorted.length) throw new Error('Aucun digest dans digests/ pour le moment');
+
+  // Fetch latest digest content
+  const latest = sorted[0];
+  const fc = await fetch(latest.download_url);
+  const text = await fc.text();
+
+  // Store config
+  ghCfg = { repo, wallet };
+  try { localStorage.setItem('atm_conn', JSON.stringify({repo, wallet})); } catch(e){}
+
+  setPill('live');
+  msg.textContent = `✓ GitHub connecté — ${sorted.length} digest(s) trouvé(s)`;
+  msg.style.color = 'var(--ok)';
+
+  // Inject digest lines into activity log
+  injectDigestToLog(latest.name, text);
+
+  // Update agent 0 stats
+  const a = AGENTS[0];
+  a.state = 'running';
+  a.label = 'ResearchBot-1';
+  if (wallet) a.wallet = wallet;
+  renderAgentTabs();
+  renderStats();
+
+  setTimeout(closeConnect, 1500);
+}
+
+function injectDigestToLog(filename, text) {
+  const date = filename.replace('digest_','').replace('.md','');
+  const lines = text.split('\n').filter(l => l.startsWith('## ') || l.startsWith('→ '));
+  const papers = [];
+  let cur = null;
+  for (const l of lines) {
+    if (l.startsWith('## ')) { cur = l.replace(/^## \d+\. /,'').trim(); }
+    else if (l.startsWith('→ ') && cur) { papers.push({title: cur, link: l.replace('→ ','').trim()}); cur = null; }
+  }
+
+  const log = document.getElementById('log');
+  const badge = t => `<span class="badge badge-conway">conway</span>`;
+  const frag = document.createDocumentFragment();
+
+  const header = document.createElement('div');
+  header.className = 'log-entry';
+  header.innerHTML = `<span class="ts">${date} 07:00</span>${badge()} <span class="msg" style="color:var(--ok);font-weight:600">Digest quotidien généré — ${papers.length} papers</span>`;
+  frag.appendChild(header);
+
+  papers.forEach((p, i) => {
+    const el = document.createElement('div');
+    el.className = 'log-entry';
+    el.innerHTML = `<span class="ts">${date} 07:0${i+1}</span>${badge()} <span class="msg">#${i+1} <a href="${p.link}" target="_blank" style="color:var(--accent);text-decoration:none">${p.title.slice(0,80)}${p.title.length>80?'…':''}</a></span>`;
+    frag.appendChild(el);
+  });
+
+  if (log.firstChild) log.insertBefore(frag, log.firstChild);
+  else log.appendChild(frag);
 }
 
 async function fetchLive(path) {
