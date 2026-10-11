@@ -8,6 +8,11 @@
 
   "typesafeApiKey": "${TYPESAFE_API_KEY}",
 
+  "agentWalletAddress": "0xDCEF59AF1e1c263cAf704E9811f477d4CD816044",
+  "agentWalletPrivateKey": "${AGENT_WALLET_PRIVATE_KEY}",
+  "paymentNetwork": "base",
+  "usdcContract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+
   "conwayApiUrl": "https://api.conway.ai",
   "conwayApiKey": "",
   "sandboxId": "",
