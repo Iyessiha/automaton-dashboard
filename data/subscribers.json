@@ -1,0 +1,14 @@
+[
+  {
+    "id": "sub_test_001",
+    "wallet": "0x0000000000000000000000000000000000000001",
+    "relay_address": "test@example.com",
+    "plan": "weekly",
+    "price_usdc": 0.50,
+    "joined": "2026-10-11T00:00:00Z",
+    "last_paid": null,
+    "failed_attempts": 0,
+    "status": "active",
+    "note": "Test subscriber — replace with real data"
+  }
+]
