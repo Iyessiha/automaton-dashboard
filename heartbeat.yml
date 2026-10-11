@@ -1,0 +1,38 @@
+version: 1
+
+tasks:
+  # Built-ins — leave as-is
+  - name: ping
+    schedule: "*/2 * * * *"
+  - name: credits
+    schedule: "*/5 * * * *"
+  - name: social_inbox
+    schedule: "*/2 * * * *"
+  - name: model_refresh
+    schedule: "0 * * * *"
+  - name: soul_reflection
+    schedule: "0 */6 * * *"
+  - name: metrics
+    schedule: "*/30 * * * *"
+
+  # Custom: daily research digest
+  - name: daily-research
+    schedule: "0 7 * * *"
+    description: "Fetch arxiv papers, summarize, publish digest to subscribers"
+    skill: arxiv-digest
+    wake_agent: true
+
+  # Custom: subscriber billing check
+  - name: billing-sweep
+    schedule: "0 9 * * 1"
+    description: "Weekly invoice all subscribers via x402"
+    wake_agent: true
+
+  # Custom: health report to creator
+  - name: creator-report
+    schedule: "0 8 * * *"
+    description: "Send daily status ping with earnings, turns, subscriber count"
+    wake_agent: false
+    script: |
+      echo "Daily report: $(date)" > /tmp/report.txt
+      echo "Credits: $(cat ~/.automaton/state.db | ...)" >> /tmp/report.txt

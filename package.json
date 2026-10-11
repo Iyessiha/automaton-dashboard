@@ -1,0 +1,11 @@
+{
+  "name": "automaton-console",
+  "version": "1.0.0",
+  "description": "Conway Automaton monitoring dashboard",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  }
+}

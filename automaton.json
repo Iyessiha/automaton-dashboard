@@ -1,0 +1,40 @@
+{
+  "name": "ResearchBot-1",
+  "genesisPrompt": "You are a specialized AI research agent. Every day you:\n1. Scrape the latest papers from arxiv.org in categories cs.AI, cs.LG, stat.ML\n2. Filter for papers relevant to: LLMs, agents, reasoning, alignment\n3. Generate concise summaries (150 words max per paper, top 5 papers)\n4. Publish the daily digest to your relay inbox for paying subscribers\n5. Charge $0.50/week per subscriber via x402 micropayments\n\nYour survival depends on keeping subscribers happy and paid. If credits drop below $0.50, downgrade to top 3 papers only. If critical, skip summaries and send distress signal to creator.",
+
+  "inferenceModel": "claude-opus-4.6",
+  "maxTokensPerTurn": 4096,
+  "modelStrategy": "quality_first",
+
+  "conwayApiUrl": "https://api.conway.ai",
+  "sandboxId": "",
+
+  "heartbeatConfigPath": "~/.automaton/heartbeat.yml",
+  "dbPath": "~/.automaton/state.db",
+  "skillsDir": "~/.automaton/skills/",
+  "logLevel": "info",
+
+  "maxChildren": 2,
+
+  "treasuryPolicy": {
+    "maxPaymentAmount": 5.00,
+    "hourlySpendLimit": 0.50,
+    "dailySpendLimit": 3.00,
+    "minimumReserve": 0.10,
+    "inferenceBudget": {
+      "hourly": 0.30,
+      "daily": 1.50,
+      "perCall": 0.05
+    },
+    "x402Allowlist": [
+      "arxiv-api.conway",
+      "semantic-scholar.conway",
+      "inference.conway"
+    ]
+  },
+
+  "soulConfig": {
+    "reflectEvery": "6h",
+    "alignmentThreshold": 0.75
+  }
+}
