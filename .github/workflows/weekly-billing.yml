@@ -1,0 +1,99 @@
+name: Weekly Subscriber Billing
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'   # Every Monday at 09:00 UTC
+  workflow_dispatch:
+
+jobs:
+  billing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run billing sweep
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: |
+          python3 - << 'EOF'
+          import json, os
+          from datetime import datetime, timezone, timedelta
+          from pathlib import Path
+
+          DATA = Path('data')
+          DATA.mkdir(exist_ok=True)
+
+          subs_path  = DATA / 'subscribers.json'
+          log_path   = DATA / 'payment_log.json'
+          churn_path = DATA / 'churn_log.json'
+
+          def load(p, d):
+              return json.loads(p.read_text()) if p.exists() else d
+
+          subscribers = load(subs_path, [])
+          payment_log = load(log_path, {})
+          churn_log   = load(churn_path, [])
+          now = datetime.now(timezone.utc)
+          WEEK = now.strftime('%Y-W%W')
+
+          due, skipped = [], []
+          for s in subscribers:
+              if s['status'] != 'active': continue
+              last = datetime.fromisoformat(s['last_paid']) if s.get('last_paid') else None
+              if not last or (now - last).days >= 7:
+                  due.append(s)
+              else:
+                  skipped.append(s['id'])
+
+          print(f"Due: {len(due)} | Already paid: {len(skipped)}")
+
+          # NOTE: real x402 payments require on-chain wallet — placeholder here
+          invoiced, failed = 0, 0
+          for s in due:
+              # TODO: replace with actual x402 call once wallet is configured
+              print(f"  Invoice {s['id']} ${s['price_usdc']} USDC — (x402 pending wallet setup)")
+              # Simulate success for now
+              success = True
+
+              sid = s['id']
+              if sid not in payment_log: payment_log[sid] = []
+
+              if success:
+                  payment_log[sid].append({'week': WEEK, 'amount': s['price_usdc'], 'ts': now.isoformat()})
+                  s['last_paid'] = now.isoformat()
+                  s['failed_attempts'] = 0
+                  invoiced += 1
+              else:
+                  s['failed_attempts'] = s.get('failed_attempts', 0) + 1
+                  failed += 1
+
+          # Churn after 3 failures
+          for s in subscribers:
+              if s.get('failed_attempts', 0) >= 3 and s['status'] == 'active':
+                  s['status'] = 'churned'
+                  s['churned_at'] = now.isoformat()
+                  churn_log.append({'id': s['id'], 'churned_at': s['churned_at']})
+                  print(f"  Churned: {s['id']}")
+
+          subs_path.write_text(json.dumps(subscribers, indent=2))
+          log_path.write_text(json.dumps(payment_log, indent=2))
+          churn_path.write_text(json.dumps(churn_log, indent=2))
+
+          active = sum(1 for s in subscribers if s['status'] == 'active')
+          revenue = invoiced * 0.50
+          print(f"\nBilling complete: {invoiced} invoiced | ${revenue:.2f} USDC | {active} active subs")
+          EOF
+
+      - name: Commit billing state
+        run: |
+          git config user.name  "ResearchBot"
+          git config user.email "bot@github.com"
+          git add data/
+          git diff --staged --quiet || git commit -m "billing: week $(date +%Y-W%W)"
+          git push
