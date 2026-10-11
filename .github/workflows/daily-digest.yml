@@ -1,0 +1,189 @@
+name: Daily Research Digest
+
+on:
+  schedule:
+    - cron: '0 7 * * *'   # Every day at 07:00 UTC
+  workflow_dispatch:        # Manual trigger from GitHub UI
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install anthropic requests
+
+      - name: Fetch arxiv papers
+        run: |
+          curl -s "https://export.arxiv.org/api/query?search_query=cat:cs.AI+OR+cat:cs.LG+OR+cat:stat.ML&sortBy=submittedDate&sortOrder=descending&max_results=50" \
+            -o /tmp/arxiv_feed.xml
+          echo "Fetched arxiv feed"
+
+      - name: Parse papers
+        run: |
+          python3 - << 'EOF'
+          import xml.etree.ElementTree as ET, json
+          tree = ET.parse('/tmp/arxiv_feed.xml')
+          ns = {'a': 'http://www.w3.org/2005/Atom'}
+          papers = []
+          for e in tree.getroot().findall('a:entry', ns):
+              papers.append({
+                  'title':   e.find('a:title', ns).text.strip(),
+                  'summary': e.find('a:summary', ns).text.strip()[:600],
+                  'link':    e.find('a:id', ns).text.strip()
+              })
+          with open('/tmp/papers_raw.json', 'w') as f:
+              json.dump(papers, f)
+          print(f"Parsed {len(papers)} papers")
+          EOF
+
+      - name: Score relevance with Jev (TypeSafe AI)
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: |
+          python3 - << 'EOF'
+          import json, os, urllib.request
+
+          papers = json.load(open('/tmp/papers_raw.json'))
+          questions = {}
+          for i, p in enumerate(papers):
+              questions[f"p{i}"] = {
+                  "type": "score",
+                  "instructions": f"Title: {p['title']}\nAbstract: {p['summary']}",
+                  "criteria": [
+                      {"level": "irrelevant", "description": "No connection to LLMs, agents, or alignment"},
+                      {"level": "marginal",   "description": "Tangentially related"},
+                      {"level": "relevant",   "description": "Relevant to LLMs, reasoning, or agents"},
+                      {"level": "important",  "description": "Significant advance"},
+                      {"level": "must_read",  "description": "Breakthrough result"}
+                  ]
+              }
+
+          payload = json.dumps({
+              "state": "AI research paper evaluation for ML practitioners newsletter",
+              "model": "jev-latest",
+              "questions": questions
+          }).encode()
+
+          req = urllib.request.Request(
+              'https://api.typesafe.ai/v1/systemone',
+              data=payload,
+              headers={
+                  'Authorization': f"Bearer {os.environ['TYPESAFE_API_KEY']}",
+                  'Content-Type': 'application/json'
+              }
+          )
+          resp = json.loads(urllib.request.urlopen(req).read())
+
+          scored = []
+          for i, p in enumerate(papers):
+              ans = resp['answers'].get(f'p{i}', {})
+              score = ans.get('score', 0)
+              if score >= 0.6:
+                  scored.append({**p, 'relevance': round(score, 3)})
+
+          top5 = sorted(scored, key=lambda x: x['relevance'], reverse=True)[:5]
+          with open('/tmp/papers_scored.json', 'w') as f:
+              json.dump(top5, f, indent=2)
+
+          print(f"Jev: {len(scored)}/{len(papers)} relevant, kept top {len(top5)}")
+          tokens = resp['usage']
+          print(f"Tokens: {tokens['input_tokens']} in / {tokens['output_tokens']} out")
+          EOF
+
+      - name: Summarise with Claude (Anthropic)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python3 - << 'EOF'
+          import anthropic, json, os
+
+          client = anthropic.Anthropic(api_key=os.environ['ANTHROPIC_API_KEY'])
+          papers = json.load(open('/tmp/papers_scored.json'))
+          summaries = []
+
+          for p in papers:
+              msg = client.messages.create(
+                  model="claude-opus-4-5",
+                  max_tokens=200,
+                  messages=[{"role": "user", "content":
+                      f"Summarize in exactly 2 sentences (max 150 words). "
+                      f"Focus on: problem solved, method used, why it matters to ML practitioners.\n\n"
+                      f"Title: {p['title']}\nAbstract: {p['summary']}"
+                  }]
+              )
+              summaries.append({**p, 'digest_summary': msg.content[0].text})
+              print(f"Summarised: {p['title'][:60]}...")
+
+          with open('/tmp/papers_summarised.json', 'w') as f:
+              json.dump(summaries, f, indent=2)
+          EOF
+
+      - name: Quality check with Jev
+        env:
+          TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+        run: |
+          python3 - << 'EOF'
+          import json, os, urllib.request
+          from datetime import date
+
+          papers = json.load(open('/tmp/papers_summarised.json'))
+          today = date.today().strftime('%B %d, %Y')
+
+          lines = [f"# AI Research Digest — {today}\n", f"**{len(papers)} papers curated**\n", "---\n"]
+          for i, p in enumerate(papers, 1):
+              lines += [f"## {i}. {p['title']}", f"*Relevance: {p['relevance']:.0%}*",
+                        "", p['digest_summary'], "", f"→ {p['link']}", ""]
+          digest = '\n'.join(lines)
+
+          with open(f"/tmp/digest_{date.today().isoformat()}.md", 'w') as f:
+              f.write(digest)
+
+          payload = json.dumps({
+              "state": digest, "model": "jev-latest",
+              "questions": {
+                  "ready": {"type": "noul",
+                      "instructions": "Is this digest ready to send to paying subscribers? Clear, accurate, valuable."},
+                  "has_errors": {"type": "noul",
+                      "instructions": "Does this digest contain errors or incomplete sentences?"}
+              }
+          }).encode()
+
+          req = urllib.request.Request('https://api.typesafe.ai/v1/systemone', data=payload,
+              headers={'Authorization': f"Bearer {os.environ['TYPESAFE_API_KEY']}", 'Content-Type': 'application/json'})
+          resp = json.loads(urllib.request.urlopen(req).read())
+          ans = resp['answers']
+
+          ready = ans['ready']['noul']
+          errors = ans['has_errors']['noul']
+          print(f"Ready: {ready:.2f} | Errors: {errors:.2f}")
+
+          if ready < 0.7 or errors > 0.3:
+              print("QUALITY CHECK FAILED — not publishing")
+              exit(1)
+          print("Quality check passed")
+          EOF
+
+      - name: Save digest to repo
+        run: |
+          mkdir -p digests
+          cp /tmp/digest_$(date +%Y-%m-%d).md digests/
+          git config user.name  "ResearchBot"
+          git config user.email "bot@github.com"
+          git add digests/
+          git diff --staged --quiet || git commit -m "digest: $(date +%Y-%m-%d)"
+          git push
+
+      - name: Upload digest as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ github.run_id }}
+          path: /tmp/digest_*.md
+          retention-days: 30
